@@ -41,7 +41,7 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=256, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus')
     parser.add_argument('--epochs', default=200, type=int)
-    parser.add_argument('--accum_iter', default=16, type=int,
+    parser.add_argument('--accum_iter', default=2, type=int,
                         help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
 
     # Model parameters
@@ -64,14 +64,14 @@ def get_args_parser():
 
     parser.add_argument('--lr', type=float, default=None, metavar='LR',
                         help='learning rate (absolute lr)')
-    parser.add_argument('--blr', type=float, default=1e-4, metavar='LR',
+    parser.add_argument('--blr', type=float, default=5e-5, metavar='LR',
                         help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
     parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
 
     parser.add_argument('--warmup_epochs', type=int, default=20, metavar='N',
                         help='epochs to warmup LR')
-    parser.add_argument('--update_epoch_list',type=list,default=[0,5,10,20,40,80,160,200])
+    # parser.add_argument('--update_epoch_list',type=list,default=[0,5,10,20,40,80,160,200])
 
     # Dataset parameters
     parser.add_argument('--data_path', default='', type=str,
@@ -187,7 +187,7 @@ def main(args):
         model_without_ddp = model.module
     
     # following timm: set wd as 0 for bias and norm layers
-    param_groups = optim_factory.add_weight_decay(model_without_ddp, args.weight_decay)
+    param_groups = optim_factory.add_weight_decay(model_without_ddp.student_model, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     print(optimizer)
     loss_scaler = NativeScaler()
@@ -198,8 +198,8 @@ def main(args):
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
 
-        if epoch in args.update_epoch_list:
-            model.update_teacher()
+        # if epoch in args.update_epoch_list:
+        #     model.update_teacher()
 
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -209,6 +209,7 @@ def main(args):
             log_writer=log_writer,
             args=args
         )
+        model.update_teacher(method='ema')
         if args.output_dir and (epoch % 15 == 0 or epoch + 1 == args.epochs):
             misc.save_model(    # 只保存student_model
                 args=args, model=model, model_without_ddp=model_without_ddp.student_model, optimizer=optimizer,
@@ -243,4 +244,12 @@ if __name__ == '__main__':
     if args.output_dir:
         args.output_dir = os.path.join(args.output_dir, f"run_{timestamp}")
         os.makedirs(args.output_dir, exist_ok=True)
+
+    # 保存args方便后续比较
+    args_dict = vars(args)
+    args_path = os.path.join(args.output_dir, "args.txt")  
+    with open(args_path, "w") as f:
+        json.dump(args_dict, f, indent=4)
+
+
     main(args)
