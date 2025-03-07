@@ -102,6 +102,8 @@ def get_args_parser():
     parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
+    
+    parser.add_argument('--ema_decay',default=0.999)
 
     return parser
 
@@ -123,7 +125,7 @@ def main(args):
 
     # simple augmentation
     transform_train = transforms.Compose([
-            transforms.RandomResizedCrop(args.input_size, scale=(0.2, 1.0), interpolation=3),  # 3 is bicubic
+            transforms.RandomResizedCrop(args.input_size, scale=(0.6, 1.0), interpolation=3),  # 3 is bicubic
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
@@ -159,7 +161,7 @@ def main(args):
     )
     
     # define the model
-    model = model_bootstrapped_mae.BootstrappedMAE()
+    model = model_bootstrapped_mae.BootstrappedMAE(args)
 
     # pixel_pretrain_checkpoint = torch.load('./output_dir/mae/checkpoint-40.pth', map_location="cpu")
     # encoder_state_dict = {k: v for k, v in pixel_pretrain_checkpoint["model"].items() if "decoder" not in k}

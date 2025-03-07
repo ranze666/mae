@@ -6,7 +6,7 @@ from functools import partial
 import math
 
 class BootstrappedMAE(nn.Module):
-    def __init__(self,ema_decay=0.99):
+    def __init__(self,args):
         super().__init__()
 
         self.teacher_model = featmae_vit_tiny_patch4_dec5128b()  
@@ -16,7 +16,7 @@ class BootstrappedMAE(nn.Module):
         for param in self.teacher_model.parameters():
             param.requires_grad = False
 
-        self.ema_decay = ema_decay
+        self.ema_decay = args.ema_decay
 
     def forward(self,imgs,mask_ratio=0.75):
         latent_student, mask, ids_restore = self.student_model.forward_encoder(imgs, mask_ratio)    # latent:[N,1+(unmasked patch num),C]
