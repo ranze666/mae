@@ -1,2 +1,3 @@
 output_dir/
 data/
+__pycache__/

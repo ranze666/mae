@@ -109,8 +109,8 @@ def get_args_parser():
                         help='How to apply mixup/cutmix params. Per "batch", "pair", or "elem"')
 
     # * Finetuning params
-    parser.add_argument('--finetune', default='./output_dir/bootmae/run_20250307_204346/checkpoint-45.pth',help='finetune from checkpoint')
-    # parser.add_argument('--finetune', default='./output_dir/mae/checkpoint-40.pth',help='finetune from checkpoint')     # 第一个epoch28.5
+    parser.add_argument('--finetune', default='./output_dir/bootmae/run_20250308_010312/checkpoint-30.pth',help='finetune from checkpoint')
+    # parser.add_argument('--finetune', default='./output_dir/mae/checkpoint-140.pth',help='finetune from checkpoint')     
 
     parser.add_argument('--global_pool', action='store_true')
     parser.set_defaults(global_pool=True)

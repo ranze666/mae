@@ -103,7 +103,11 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
     
-    parser.add_argument('--ema_decay',default=0.999)
+    parser.add_argument('--ema_decay_init',default=0.9)
+    parser.add_argument('--ema_decay_final',default=0.999)
+    parser.add_argument('--ema_decay_warmup_epoch',default=80)
+
+
 
     return parser
 
@@ -211,7 +215,9 @@ def main(args):
             log_writer=log_writer,
             args=args
         )
+        model.update_decay_cosine(epoch,args)
         model.update_teacher(method='ema')
+        log_writer.add_scalar('ema_decay', model.ema_decay, epoch)
         if args.output_dir and (epoch % 15 == 0 or epoch + 1 == args.epochs):
             misc.save_model(    # 只保存student_model
                 args=args, model=model, model_without_ddp=model_without_ddp.student_model, optimizer=optimizer,

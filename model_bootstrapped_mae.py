@@ -16,7 +16,9 @@ class BootstrappedMAE(nn.Module):
         for param in self.teacher_model.parameters():
             param.requires_grad = False
 
-        self.ema_decay = args.ema_decay
+        self.ema_decay = args.ema_decay_init
+
+        self.LN = nn.LayerNorm(self.student_model.embed_dim, eps=1e-6, elementwise_affine=False).cuda()
 
     def forward(self,imgs,mask_ratio=0.75):
         latent_student, mask, ids_restore = self.student_model.forward_encoder(imgs, mask_ratio)    # latent:[N,1+(unmasked patch num),C]
@@ -33,7 +35,7 @@ class BootstrappedMAE(nn.Module):
         # latent_teacher: [N,L,C]
         # mask: [N,L], 0 is keep, 1 is remove
 
-        loss = (pred_student - latent_teacher) ** 2
+        loss = (self.LN(pred_student) - self.LN(latent_teacher)) ** 2
         loss = loss.mean(dim=-1)    # [N,L]
 
         loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
@@ -44,7 +46,14 @@ class BootstrappedMAE(nn.Module):
             
 
         return loss
-    
+    def update_decay_cosine(self,epoch,args):
+        # 余弦衰减ema的参数，使开始时更新快，后期更新慢
+        if epoch<args.ema_decay_warmup_epoch:
+            cosine_decay = 0.5 * (1 + math.cos(math.pi * epoch / args.ema_decay_warmup_epoch))
+            ema_decay = args.ema_decay_final + (args.ema_decay_init - args.ema_decay_final) * cosine_decay
+            self.ema_decay = ema_decay
+        else:
+            self.ema_decay = args.ema_decay_final
 
     @torch.no_grad()
     def update_teacher(self,method='copy'):
@@ -94,6 +103,8 @@ class FeatureMaskedAutoencoderViT(MaskedAutoencoderViT):
         self.norm_pix_loss = norm_pix_loss
 
         self.initialize_weights()
+
+        self.embed_dim = embed_dim
 
 
 def featmae_vit_tiny_patch4_dec5128b(**kwargs):
