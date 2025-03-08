@@ -34,7 +34,7 @@ import models_mae
 import model_bootstrapped_mae
 
 from engine_pretrain import train_one_epoch
-
+import main_finetune
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE pre-training', add_help=False)
@@ -66,10 +66,10 @@ def get_args_parser():
                         help='learning rate (absolute lr)')
     parser.add_argument('--blr', type=float, default=5e-5, metavar='LR',
                         help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
-    parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
+    parser.add_argument('--min_lr', type=float, default=5e-5, metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
 
-    parser.add_argument('--warmup_epochs', type=int, default=20, metavar='N',
+    parser.add_argument('--warmup_epochs', type=int, default=80, metavar='N',
                         help='epochs to warmup LR')
     # parser.add_argument('--update_epoch_list',type=list,default=[0,5,10,20,40,80,160,200])
 
@@ -103,14 +103,81 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
     
-    parser.add_argument('--ema_decay_init',default=0.9)
-    parser.add_argument('--ema_decay_final',default=0.999)
+    parser.add_argument('--ema_decay_init',default=0.7)
+    parser.add_argument('--ema_decay_final',default=0.9999)
     parser.add_argument('--ema_decay_warmup_epoch',default=80)
 
 
 
     return parser
 
+
+finetune_eval_dict = {
+    "batch_size": 256,
+    "epochs": 1,
+    "accum_iter": 4,
+    
+    # Model parameters
+    "model": "vit_tiny_patch4",
+    "input_size": 32,
+    "drop_path": 0.1,
+
+    # Optimizer parameters
+    "clip_grad": None,
+    "weight_decay": 0.05,
+    "lr": None,
+    "blr": 5e-4,
+    "layer_decay": 0.65,
+    "min_lr": 1e-6,
+    "warmup_epochs": 40,
+
+    # Augmentation parameters
+    "color_jitter": None,
+    "aa": "rand-m9-mstd0.5-inc1",
+    "smoothing": 0.1,
+
+    # Random Erase params
+    "reprob": 0.25,
+    "remode": "pixel",
+    "recount": 1,
+    "resplit": False,
+
+    # Mixup params
+    "mixup": 0.8,
+    "cutmix": 1.0,
+    "cutmix_minmax": None,
+    "mixup_prob": 1.0,
+    "mixup_switch_prob": 0.5,
+    "mixup_mode": "batch",
+
+    # Finetuning params
+    "finetune": "",
+    "global_pool": True,
+    "cls_token": False,
+
+    # Dataset parameters
+    "data_path": "",
+    "nb_classes": 10,
+    "output_dir": "./output_dir/tmp",
+    "log_dir": "./output_dir/tmp",
+    "device": "cuda",
+    "seed": 0,
+    "resume": "",
+
+    "start_epoch": 0,
+    "eval": False,
+    "dist_eval": False,
+    "num_workers": 10,
+    "pin_mem": True,
+
+    # Distributed training parameters
+    "world_size": 1,
+    "local_rank": -1,
+    "dist_on_itp": False,
+    "dist_url": "env://"
+}
+from types import SimpleNamespace
+finetune_eval_namespace = SimpleNamespace(**finetune_eval_dict)
 
 def main(args):
     misc.init_distributed_mode(args)
@@ -218,11 +285,16 @@ def main(args):
         model.update_decay_cosine(epoch,args)
         model.update_teacher(method='ema')
         log_writer.add_scalar('ema_decay', model.ema_decay, epoch)
-        if args.output_dir and (epoch % 15 == 0 or epoch + 1 == args.epochs):
+        if args.output_dir and (epoch % 20 == 0 or epoch + 1 == args.epochs):
             misc.save_model(    # 只保存student_model
                 args=args, model=model, model_without_ddp=model_without_ddp.student_model, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
-        
+            
+            finetune_eval_namespace.finetune = f'{args.output_dir}/checkpoint-{epoch}.pth'
+            acc = main_finetune.main(finetune_eval_namespace)
+            print('finetune acc:', acc)
+
+            log_writer.add_scalar('finetune_first_epoch_acc', acc ,epoch)
 
 
 

@@ -42,7 +42,6 @@ class BootstrappedMAE(nn.Module):
 
         if not math.isfinite(loss.item()):
             print("Loss is {}, stopping training".format(loss.item()))
-            import ipdb;ipdb.set_trace()
             
 
         return loss

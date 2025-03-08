@@ -109,8 +109,8 @@ def get_args_parser():
                         help='How to apply mixup/cutmix params. Per "batch", "pair", or "elem"')
 
     # * Finetuning params
-    parser.add_argument('--finetune', default='./output_dir/bootmae/run_20250308_010312/checkpoint-30.pth',help='finetune from checkpoint')
-    # parser.add_argument('--finetune', default='./output_dir/mae/checkpoint-140.pth',help='finetune from checkpoint')     
+    parser.add_argument('--finetune', default='./output_dir/bootmae/run_20250308_023227/checkpoint-120.pth',help='finetune from checkpoint')
+    # parser.add_argument('--finetune', default='./output_dir/mae/checkpoint-160.pth',help='finetune from checkpoint')     
 
     parser.add_argument('--global_pool', action='store_true')
     parser.set_defaults(global_pool=True)
@@ -344,9 +344,11 @@ def main(args):
             with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
+    # total_time = time.time() - start_time
+    # total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    # print('Training time {}'.format(total_time_str))
+
+    return test_stats['acc1']
 
 
 if __name__ == '__main__':
