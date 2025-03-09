@@ -37,18 +37,19 @@ from util.crop import RandomResizedCrop
 import models_vit
 
 from engine_finetune import train_one_epoch, evaluate
-
+import shutil
+from torch.utils.data import random_split
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE linear probing for image classification', add_help=False)
     parser.add_argument('--batch_size', default=512, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus')
-    parser.add_argument('--epochs', default=90, type=int)
-    parser.add_argument('--accum_iter', default=1, type=int,
+    parser.add_argument('--epochs', default=100, type=int)
+    parser.add_argument('--accum_iter', default=8, type=int,
                         help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
 
     # Model parameters
-    parser.add_argument('--model', default='vit_large_patch16', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='vit_tiny_patch4', type=str, metavar='MODEL',
                         help='Name of model to train')
 
     # Optimizer parameters
@@ -77,7 +78,7 @@ def get_args_parser():
     # Dataset parameters
     parser.add_argument('--data_path', default='/datasets01/imagenet_full_size/061417/', type=str,
                         help='dataset path')
-    parser.add_argument('--nb_classes', default=1000, type=int,
+    parser.add_argument('--nb_classes', default=10, type=int,
                         help='number of the classification types')
 
     parser.add_argument('--output_dir', default='./output_dir',
@@ -110,6 +111,8 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
 
+    parser.add_argument('--feature_layer', default=11,type=int)
+
     return parser
 
 
@@ -130,19 +133,24 @@ def main(args):
 
     # linear probe: weak augmentation
     transform_train = transforms.Compose([
-            RandomResizedCrop(224, interpolation=3),
+            # RandomResizedCrop(32, interpolation=3),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
     transform_val = transforms.Compose([
-            transforms.Resize(256, interpolation=3),
-            transforms.CenterCrop(224),
+            # transforms.Resize(32, interpolation=3),
+            # transforms.CenterCrop(32),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
-    dataset_val = datasets.ImageFolder(os.path.join(args.data_path, 'val'), transform=transform_val)
-    print(dataset_train)
-    print(dataset_val)
+    dataset_train = datasets.CIFAR10(root="./data", train=True,
+                                           transform=transform_train, download=True)
+    total_size = len(dataset_train)
+    val_size = total_size // 10 
+    train_size = total_size - val_size
+    dataset_train, dataset_val = random_split(dataset_train, [train_size, val_size])
+    dataset_test = datasets.CIFAR10(root="./data", train=False,
+                                           transform=transform_val, download=True)
+
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
@@ -180,6 +188,15 @@ def main(args):
 
     data_loader_val = torch.utils.data.DataLoader(
         dataset_val, sampler=sampler_val,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_mem,
+        drop_last=False
+    )
+
+
+    data_loader_test = torch.utils.data.DataLoader(
+        dataset_test, sampler=sampler_val,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
@@ -259,14 +276,16 @@ def main(args):
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
-    if args.eval:
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        exit(0)
+    # if args.eval:
+    #     test_stats = evaluate(data_loader_val, model, device)
+    #     print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+    #     exit(0)
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
-    max_accuracy = 0.0
+    # max_accuracy = 0.0
+    best_val_acc = 0.0
+    best_model_path = os.path.join(args.output_dir, "best_model.pth")
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -282,18 +301,24 @@ def main(args):
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
 
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        max_accuracy = max(max_accuracy, test_stats["acc1"])
-        print(f'Max accuracy: {max_accuracy:.2f}%')
+        val_stats = evaluate(data_loader_val, model, device)
+        print(f"Accuracy of the network on the {len(dataset_val)} val images: {val_stats['acc1']:.1f}%")
+        val_acc = val_stats["acc1"]
+
+        # max_accuracy = max(max_accuracy, test_stats["acc1"])
+        # print(f'Max accuracy: {max_accuracy:.2f}%')
+        if val_acc > best_val_acc:  # 保存在验证集上效果最好的模型
+            best_val_acc = val_acc
+            torch.save(model.state_dict(), best_model_path)
+            print(f"New best model saved with val acc: {best_val_acc:.4f}")
 
         if log_writer is not None:
-            log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
-            log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
-            log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
+            log_writer.add_scalar('perf/test_acc1', val_stats['acc1'], epoch)
+            log_writer.add_scalar('perf/test_acc5', val_stats['acc5'], epoch)
+            log_writer.add_scalar('perf/test_loss', val_stats['loss'], epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        **{f'test_{k}': v for k, v in test_stats.items()},
+                        **{f'test_{k}': v for k, v in val_stats.items()},
                         'epoch': epoch,
                         'n_parameters': n_parameters}
 
@@ -303,14 +328,28 @@ def main(args):
             with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
+    # total_time = time.time() - start_time
+    # total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    # print('Training time {}'.format(total_time_str))
 
+    model.load_state_dict(torch.load(best_model_path))
+    test_stats = evaluate(data_loader_test, model, device)
+    test_acc = test_stats['acc1']
+    print(f"Test accuracy of the best model: {test_stats['acc1']:.4f}")
+
+    output_file = os.path.join(args.output_dir, "test_results.txt")
+    with open(output_file, "w") as f:
+        f.write(f"Test Accuracy: {test_acc:.4f}\n")
+
+    return test_stats['acc1']
 
 if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
     if args.output_dir:
-        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+        os.makedirs(args.output_dir, exist_ok=True)
+    args.log_dir = args.output_dir
+    if args.log_dir:
+        # args.log_dir = os.path.join(args.log_dir, f"run_{timestamp}")
+        os.makedirs(args.log_dir, exist_ok=True)
     main(args)

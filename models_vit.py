@@ -30,6 +30,7 @@ class VisionTransformer(timm.models.vision_transformer.VisionTransformer):
             self.fc_norm = norm_layer(embed_dim)
 
             del self.norm  # remove the original norm
+        self.feature_layer = None
 
     def forward_features(self, x):
         B = x.shape[0]
@@ -40,10 +41,11 @@ class VisionTransformer(timm.models.vision_transformer.VisionTransformer):
         x = x + self.pos_embed
         x = self.pos_drop(x)
 
-        for blk in self.blocks:
+        for i,blk in enumerate(self.blocks):
             x = blk(x)
-
-        if self.global_pool:
+            if i == self.feature_layer:
+                break
+        if self.global_pool:    # true
             x = x[:, 1:, :].mean(dim=1)  # global pool without cls token
             outcome = self.fc_norm(x)
         else:

@@ -16,7 +16,7 @@ import numpy as np
 import os
 import time
 from pathlib import Path
-
+import torchvision.transforms as transforms
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
@@ -37,7 +37,10 @@ from util.misc import NativeScalerWithGradNormCount as NativeScaler
 import models_vit
 
 from engine_finetune import train_one_epoch, evaluate
+from datetime import datetime
+import shutil
 
+from torch.utils.data import random_split
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE fine-tuning for image classification', add_help=False)
@@ -65,7 +68,7 @@ def get_args_parser():
 
     parser.add_argument('--lr', type=float, default=None, metavar='LR',
                         help='learning rate (absolute lr)')
-    parser.add_argument('--blr', type=float, default=5e-4, metavar='LR',
+    parser.add_argument('--blr', type=float, default=1e-3, metavar='LR',
                         help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
     parser.add_argument('--layer_decay', type=float, default=0.65,
                         help='layer-wise lr decay from ELECTRA/BEiT')
@@ -109,8 +112,7 @@ def get_args_parser():
                         help='How to apply mixup/cutmix params. Per "batch", "pair", or "elem"')
 
     # * Finetuning params
-    parser.add_argument('--finetune', default='./output_dir/bootmae/run_20250308_023227/checkpoint-120.pth',help='finetune from checkpoint')
-    # parser.add_argument('--finetune', default='./output_dir/mae/checkpoint-160.pth',help='finetune from checkpoint')     
+    parser.add_argument('--finetune', default='',help='finetune from checkpoint')     
 
     parser.add_argument('--global_pool', action='store_true')
     parser.set_defaults(global_pool=True)
@@ -152,6 +154,8 @@ def get_args_parser():
     parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
+    
+    parser.add_argument('--feature_layer', default=11,type=int)
 
     return parser
 
@@ -172,7 +176,16 @@ def main(args):
     cudnn.benchmark = True
 
     dataset_train = build_dataset(is_train=True, args=args)
-    dataset_val = build_dataset(is_train=False, args=args)
+    total_size = len(dataset_train)
+    val_size = total_size // 10 
+    train_size = total_size - val_size
+    dataset_train, dataset_val = random_split(dataset_train, [train_size, val_size])
+    dataset_val.dataset.transform = transforms.Compose([
+            # transforms.Resize(32, interpolation=3),
+            # transforms.CenterCrop(32),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+    dataset_test = build_dataset(is_train=False, args=args)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
@@ -216,6 +229,14 @@ def main(args):
         drop_last=False
     )
 
+    data_loader_test = torch.utils.data.DataLoader(
+        dataset_test, sampler=sampler_val,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_mem,
+        drop_last=False
+    )
+
     mixup_fn = None
     mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
     if mixup_active:
@@ -230,6 +251,7 @@ def main(args):
         drop_path_rate=args.drop_path,
         global_pool=args.global_pool,
     )
+    model.feature_layer = args.feature_layer
 
     if args.finetune and not args.eval:
         checkpoint = torch.load(args.finetune, map_location='cpu')
@@ -266,7 +288,7 @@ def main(args):
     print('number of params (M): %.2f' % (n_parameters / 1.e6))
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
-    
+
     if args.lr is None:  # only base_lr is specified
         args.lr = args.blr * eff_batch_size / 256
 
@@ -300,14 +322,17 @@ def main(args):
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
-    if args.eval:
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        exit(0)
+    # if args.eval:
+    #     test_stats = evaluate(data_loader_val, model, device)
+    #     print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+    #     exit(0)
 
     print(f"Start training for {args.epochs} epochs")
-    start_time = time.time()
-    max_accuracy = 0.0
+
+    # max_accuracy = 0.0
+    best_val_acc = 0.0
+    best_model_path = os.path.join(args.output_dir, "best_model.pth")
+
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -323,18 +348,25 @@ def main(args):
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
 
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        max_accuracy = max(max_accuracy, test_stats["acc1"])
-        print(f'Max accuracy: {max_accuracy:.2f}%')
+        val_stats = evaluate(data_loader_val, model, device)
+        val_acc = val_stats["acc1"]
+
+        if val_acc > best_val_acc:  # 保存在验证集上效果最好的模型
+            best_val_acc = val_acc
+            torch.save(model.state_dict(), best_model_path)
+            print(f"New best model saved with val acc: {best_val_acc:.4f}")
+        
+        print(f"Accuracy of the network on the {len(dataset_val)} val images: {val_stats['acc1']:.1f}%")
+        # max_accuracy = max(max_accuracy, val_stats["acc1"])
+        # print(f'Max accuracy: {max_accuracy:.2f}%')
 
         if log_writer is not None:
-            log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
-            log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
-            log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
+            log_writer.add_scalar('perf/test_acc1', val_stats['acc1'], epoch)
+            log_writer.add_scalar('perf/test_acc5', val_stats['acc5'], epoch)
+            log_writer.add_scalar('perf/test_loss', val_stats['loss'], epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        **{f'test_{k}': v for k, v in test_stats.items()},
+                        **{f'test_{k}': v for k, v in val_stats.items()},
                         'epoch': epoch,
                         'n_parameters': n_parameters}
 
@@ -344,9 +376,15 @@ def main(args):
             with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
-    # total_time = time.time() - start_time
-    # total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    # print('Training time {}'.format(total_time_str))
+
+    model.load_state_dict(torch.load(best_model_path))
+    test_stats = evaluate(data_loader_test, model, device)
+    test_acc = test_stats['acc1']
+    print(f"Test accuracy of the best model: {test_stats['acc1']:.4f}")
+
+    output_file = os.path.join(args.output_dir, "test_results.txt")
+    with open(output_file, "w") as f:
+        f.write(f"Test Accuracy: {test_acc:.4f}\n")
 
     return test_stats['acc1']
 
@@ -354,6 +392,21 @@ def main(args):
 if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
+    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # # if args.output_dir:
+    # #     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    # if args.log_dir:
+    #     args.log_dir = os.path.join(args.log_dir, f"run_{timestamp}")
+    #     os.makedirs(args.log_dir, exist_ok=True)
+    # if args.output_dir:
+    #     args.output_dir = os.path.join(args.output_dir, f"run_{timestamp}")
+    #     os.makedirs(args.output_dir, exist_ok=True)
+
     if args.output_dir:
-        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+        os.makedirs(args.output_dir, exist_ok=True)
+    args.log_dir = args.output_dir
+    if args.log_dir:
+        # args.log_dir = os.path.join(args.log_dir, f"run_{timestamp}")
+        os.makedirs(args.log_dir, exist_ok=True)
+        
     main(args)
