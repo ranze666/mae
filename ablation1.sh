@@ -43,7 +43,7 @@ CUDA_VISIBLE_DEVICES=0 python main_linprobe.py \
 ######
 
 ######
-blr="5e-4"
+blr="1e-3"
 ema_decay_init="0.0"
 feature_layer="11"
 
