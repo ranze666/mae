@@ -66,7 +66,7 @@ def get_args_parser():
                         help='learning rate (absolute lr)')
     parser.add_argument('--blr', type=float, default=5e-4, metavar='LR',
                         help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
-    parser.add_argument('--min_lr', type=float, default=5e-5, metavar='LR',
+    parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
 
     parser.add_argument('--warmup_epochs', type=int, default=40, metavar='N',
@@ -103,9 +103,9 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
     
-    parser.add_argument('--ema_decay_init',default=0.0,type=float)
-    parser.add_argument('--ema_decay_final',default=0.99,type=float)
-    parser.add_argument('--ema_decay_warmup_epoch',default=40)
+    parser.add_argument('--ema_decay_init',default=0.7,type=float)
+    parser.add_argument('--ema_decay_final',default=0.9,type=float)
+    parser.add_argument('--ema_decay_warmup_epoch',default=40,type=int)
 
     parser.add_argument('--feature_layer', default=11, type=int)
     parser.add_argument('--ln_feature',default=False,action='store_true',)
@@ -113,6 +113,8 @@ def get_args_parser():
     # 是否使用像素作为辅助重建目标
     parser.add_argument('--use_pixel',default=False,action='store_true')
     parser.add_argument('--pixel_loss_decay',default=False,action='store_true')
+
+    parser.add_argument('--ema_cycles', default=3.5, type=float)
 
 
     return parser
@@ -266,7 +268,7 @@ if __name__ == '__main__':
         # args.log_dir = os.path.join(args.log_dir, f"run_{timestamp}")
         os.makedirs(args.log_dir, exist_ok=True)
 
-    # 保存args方便后续比较
+
     args_dict = vars(args)
     args_path = os.path.join(args.output_dir, "args.txt")  
     with open(args_path, "w") as f:

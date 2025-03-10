@@ -75,20 +75,28 @@ class BootstrappedMAE(nn.Module):
         return loss
     
 
-    def update_decay_cosine(self,epoch,args):
-        # 余弦衰减ema的参数，使开始时更新快，后期更新慢
-        if epoch<args.ema_decay_warmup_epoch:
-            cosine_decay = 0.5 * (1 + math.cos(math.pi * epoch / args.ema_decay_warmup_epoch))
-            ema_decay = args.ema_decay_final + (args.ema_decay_init - args.ema_decay_final) * cosine_decay
-            self.ema_decay = ema_decay
+    # def update_decay_cosine(self,epoch,args):
+    #     # 余弦衰减ema的参数，使开始时更新快，后期更新慢
+    #     if epoch<args.ema_decay_warmup_epoch:
+    #         cosine_decay = 0.5 * (1 + math.cos(math.pi * epoch / args.ema_decay_warmup_epoch))
+    #         ema_decay = args.ema_decay_final + (args.ema_decay_init - args.ema_decay_final) * cosine_decay
+    #         self.ema_decay = ema_decay
             
-            if self.args.pixel_loss_decay:
-            # 顺便在这里把pixel的权重也衰减了
-                self.pixel_alpha = cosine_decay
-            else:
-                self.pixel_alpha = 0.5
-        else:
-            self.ema_decay = args.ema_decay_final
+    #         if self.args.pixel_loss_decay:
+    #         # 顺便在这里把pixel的权重也衰减了
+    #             self.pixel_alpha = cosine_decay
+    #         else:
+    #             self.pixel_alpha = 0.5
+    #     else:
+    #         self.ema_decay = args.ema_decay_final
+
+    def update_decay_cosine(self,epoch,args):
+        # 震荡的更新
+
+        sin_decay =  math.sin(2*math.pi*epoch*args.ema_cycles / args.epochs + math.pi*1.5)    # -1~1正弦更新,从-1开始
+        ema_decay = args.ema_decay_init + (args.ema_decay_final-args.ema_decay_init) * sin_decay
+        self.ema_decay = ema_decay
+
 
     @torch.no_grad()
     def update_teacher(self,method='copy'):
