@@ -69,7 +69,7 @@ def get_args_parser():
     parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
 
-    parser.add_argument('--warmup_epochs', type=int, default=40, metavar='N',
+    parser.add_argument('--warmup_epochs', type=int, default=20, metavar='N',
                         help='epochs to warmup LR')
     # parser.add_argument('--update_epoch_list',type=list,default=[0,5,10,20,40,80,160,200])
 
@@ -104,7 +104,7 @@ def get_args_parser():
                         help='url used to set up distributed training')
     
     parser.add_argument('--ema_decay_init',default=0.7,type=float)
-    parser.add_argument('--ema_decay_final',default=0.9,type=float)
+    parser.add_argument('--ema_decay_final',default=0.95,type=float)
     parser.add_argument('--ema_decay_warmup_epoch',default=40,type=int)
 
     parser.add_argument('--feature_layer', default=11, type=int)
@@ -115,6 +115,7 @@ def get_args_parser():
     parser.add_argument('--pixel_loss_decay',default=False,action='store_true')
 
     parser.add_argument('--ema_cycles', default=3.5, type=float)
+    parser.add_argument('--optimizer',default='adamw')
 
 
     return parser
@@ -206,7 +207,10 @@ def main(args):
     
     # following timm: set wd as 0 for bias and norm layers
     param_groups = optim_factory.add_weight_decay(model_without_ddp.student_model, args.weight_decay)
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
+    if args.optimizer == 'adamw':
+        optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
+    elif args.optimizer == 'adam':
+        optimizer = torch.optim.Adam(param_groups, lr=args.lr)
     print(optimizer)
     loss_scaler = NativeScaler()
 

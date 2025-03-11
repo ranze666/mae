@@ -20,6 +20,8 @@ class BootstrappedMAE(nn.Module):
         self.ema_decay = args.ema_decay_init
 
         self.LN = nn.LayerNorm(self.student_model.embed_dim, eps=1e-6, elementwise_affine=False).cuda() if args.ln_feature else nn.Identity()
+        
+
         self.args = args
         self.pixel_alpha = 1
 
@@ -33,9 +35,11 @@ class BootstrappedMAE(nn.Module):
         pred_student_feature = self.student_model.forward_feature_decoder(latent_student_for_feat,ids_restore)   # [N,L,C]
         
 
-        # 重建pixel,始终使用最后一层的输出
+        # 重建pixel,始终使用最后一层的输出      不work，是不是有bug
+        # 改成都用同一个feature来重建吧
         if self.args.use_pixel:
-            pred_student_pixel = self.student_model.forward_pixel_decoder(latent_student_for_pixel,ids_restore)   # [N,L,C]
+            # pred_student_pixel = self.student_model.forward_pixel_decoder(latent_student_for_pixel,ids_restore)   # [N,L,C]
+            pred_student_pixel = self.student_model.forward_pixel_decoder(latent_student_for_feat,ids_restore)   # [N,L,C]
         else:
             pred_student_pixel = None
         
@@ -75,27 +79,27 @@ class BootstrappedMAE(nn.Module):
         return loss
     
 
-    # def update_decay_cosine(self,epoch,args):
-    #     # 余弦衰减ema的参数，使开始时更新快，后期更新慢
-    #     if epoch<args.ema_decay_warmup_epoch:
-    #         cosine_decay = 0.5 * (1 + math.cos(math.pi * epoch / args.ema_decay_warmup_epoch))
-    #         ema_decay = args.ema_decay_final + (args.ema_decay_init - args.ema_decay_final) * cosine_decay
-    #         self.ema_decay = ema_decay
-            
-    #         if self.args.pixel_loss_decay:
-    #         # 顺便在这里把pixel的权重也衰减了
-    #             self.pixel_alpha = cosine_decay
-    #         else:
-    #             self.pixel_alpha = 0.5
-    #     else:
-    #         self.ema_decay = args.ema_decay_final
-
     def update_decay_cosine(self,epoch,args):
-        # 震荡的更新
+        # 余弦衰减ema的参数，使开始时更新快，后期更新慢
+        if epoch<args.ema_decay_warmup_epoch:
+            cosine_decay = 0.5 * (1 + math.cos(math.pi * epoch / args.ema_decay_warmup_epoch))
+            ema_decay = args.ema_decay_final + (args.ema_decay_init - args.ema_decay_final) * cosine_decay
+            self.ema_decay = ema_decay
+            
+            if self.args.pixel_loss_decay:
+            # 顺便在这里把pixel的权重也衰减了
+                self.pixel_alpha = cosine_decay
+            else:
+                self.pixel_alpha = 0.5
+        else:
+            self.ema_decay = args.ema_decay_final
 
-        sin_decay =  math.sin(2*math.pi*epoch*args.ema_cycles / args.epochs + math.pi*1.5)    # -1~1正弦更新,从-1开始
-        ema_decay = args.ema_decay_init + (args.ema_decay_final-args.ema_decay_init) * sin_decay
-        self.ema_decay = ema_decay
+    # def update_decay_cosine(self,epoch,args):
+    #     # 震荡的更新
+
+    #     sin_decay =  math.sin(2*math.pi*epoch*args.ema_cycles / args.epochs + math.pi*1.5)    # -1~1正弦更新,从-1开始
+    #     ema_decay = args.ema_decay_init + (args.ema_decay_final-args.ema_decay_init) * sin_decay
+    #     self.ema_decay = ema_decay
 
 
     @torch.no_grad()
@@ -181,6 +185,7 @@ class FeatureMaskedAutoencoderViT(nn.Module):
 
         # masking: length -> length * mask_ratio
         x, mask, ids_restore = self.random_masking(x, mask_ratio)   # n,16?,192
+        # x, mask, ids_restore = self.blockwise_masking(x,mask_ratio)
 
         # append cls token
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
@@ -344,6 +349,75 @@ class FeatureMaskedAutoencoderViT(nn.Module):
     
     def forward(self,):
         print('error!')
+
+    def blockwise_masking(self, x, mask_ratio, block_size=16, rand_ratio=0.2):
+        """
+        Block-wise masking with extra randomness, vectorized over batch.
+        
+        参数:
+        x: [N, L, D]，输入序列
+        mask_ratio: 需要 mask 的比例
+        block_size: 块的大小，用于生成局部连续的 mask 区域
+        rand_ratio: 在总 mask 数中额外增加的随机 mask 比例，用于打散完全连续的块
+
+        返回:
+        x_masked: 经过 mask 后保留的 token，对应原始顺序
+        final_mask: [N, L]，二值 mask，1 表示 mask，0 表示保留
+        ids_restore: 用于恢复原始顺序的索引
+        """
+        N, L, D = x.shape
+        len_mask = int(L * mask_ratio)
+        len_keep = L - len_mask
+
+        # 1. 根据 block_size 计算每个样本所需的块数（至少 1 个）
+        num_blocks = max(1, len_mask // block_size)
+
+        # 2. 每个样本随机选择 num_blocks 个起始位置（确保 block 内不越界）
+        #    形状: [N, num_blocks]
+        start_idxs = torch.randint(0, L - block_size + 1, (N, num_blocks), device=x.device)
+
+        # 3. 利用广播构造每个 block 内的连续索引
+        #    block_range: [1, 1, block_size]
+        block_range = torch.arange(block_size, device=x.device).unsqueeze(0).unsqueeze(0)
+        #    block_indices: [N, num_blocks, block_size]
+        block_indices = start_idxs.unsqueeze(-1) + block_range
+        #    展平成: [N, num_blocks * block_size]
+        block_indices = block_indices.view(N, -1)
+
+        # 4. 计算额外随机 mask 数量（可能为 0）
+        num_extra = int(len_mask * rand_ratio)
+        #    extra_idxs: [N, num_extra]
+        extra_idxs = torch.randint(0, L, (N, num_extra), device=x.device)
+
+        # 5. 创建初始 mask，先将块 mask 和额外随机 mask 位置置 1
+        mask = torch.zeros((N, L), device=x.device)
+        mask.scatter_(1, block_indices, 1)
+        if num_extra > 0:
+            mask.scatter_(1, extra_idxs, 1)
+        mask = mask.clamp(max=1)  # 确保为二值
+
+        # 6. 每个样本可能 mask 数量会超过或不足目标数量，下面通过随机排序调整到正好 len_mask 个 mask
+        #    对每个样本生成随机值，mask 为 1 的位置保留原值，不 mask 的位置赋值大一些（这里用 2.0）使其排序靠后
+        rand_vals = torch.rand(N, L, device=x.device)
+        vals = torch.where(mask == 1, rand_vals, torch.full((N, L), 2.0, device=x.device))
+        #    排序，选取前 len_mask 个位置为最终 mask
+        sorted_indices = torch.argsort(vals, dim=1)
+        final_mask = torch.zeros_like(mask)
+        final_mask.scatter_(1, sorted_indices[:, :len_mask], 1)  # 每个样本正好 len_mask 个 1
+
+        # 7. 计算保留部分的 token 索引
+        #    构造每个样本的所有 token 索引
+        ids = torch.arange(L, device=x.device).unsqueeze(0).expand(N, L)
+        #    利用 masked_select 分别取出保留（mask==0）和 mask（mask==1）的 token 下标，并 reshape 为 [N, len_keep] 和 [N, len_mask]
+        ids_keep = torch.masked_select(ids, final_mask == 0).view(N, len_keep)
+        ids_mask = torch.masked_select(ids, final_mask == 1).view(N, len_mask)
+        #    拼接后 argsort 恢复原始顺序索引
+        ids_restore = torch.argsort(torch.cat([ids_keep, ids_mask], dim=1), dim=1)
+
+        # 8. 根据 ids_keep 从 x 中 gather 保留部分数据
+        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).expand(-1, -1, D))
+        
+        return x_masked, final_mask, ids_restore
     
 
 
