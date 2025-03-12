@@ -184,7 +184,7 @@ def main(args):
             # transforms.Resize(32, interpolation=3),
             # transforms.CenterCrop(32),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+            transforms.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.2010])])
     dataset_test = build_dataset(is_train=False, args=args)
 
     if True:  # args.distributed:

@@ -66,7 +66,7 @@ def get_args_parser():
                         help='learning rate (absolute lr)')
     parser.add_argument('--blr', type=float, default=5e-4, metavar='LR',
                         help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
-    parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
+    parser.add_argument('--min_lr', type=float, default=5e-4, metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
 
     parser.add_argument('--warmup_epochs', type=int, default=20, metavar='N',
@@ -115,7 +115,7 @@ def get_args_parser():
     parser.add_argument('--pixel_loss_decay',default=False,action='store_true')
 
     parser.add_argument('--ema_cycles', default=3.5, type=float)
-    parser.add_argument('--optimizer',default='adamw')
+    parser.add_argument('--optimizer',default='adamw',type=str)
 
 
     return parser
@@ -145,7 +145,7 @@ def main(args):
             transforms.RandomResizedCrop(args.input_size, scale=(0.6, 1.0), interpolation=3),  # 3 is bicubic
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+            transforms.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.2010])])
 
     # cifar10数据集
     dataset_train = datasets.CIFAR10(root="./data", train=True,
@@ -210,7 +210,9 @@ def main(args):
     if args.optimizer == 'adamw':
         optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     elif args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(param_groups, lr=args.lr)
+        optimizer = torch.optim.Adam(param_groups, lr=args.lr,betas=(0.9,0.95))
+    elif args.optimizer == 'sgd':
+        optimizer = torch.optim.SGD(param_groups,)
     print(optimizer)
     loss_scaler = NativeScaler()
 
@@ -235,7 +237,7 @@ def main(args):
         model.update_teacher(method='ema')
         log_writer.add_scalar('ema_decay', model.ema_decay, epoch)
         log_writer.add_scalar('pixel_decay', model.pixel_alpha, epoch)
-        if args.output_dir and (epoch % 200 == 0 or epoch + 1 == args.epochs):
+        if args.output_dir and (epoch % 50 == 0 or epoch + 1 == args.epochs):
             misc.save_model(    # 只保存student_model
                 args=args, model=model, model_without_ddp=model_without_ddp.student_model, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)

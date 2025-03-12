@@ -5,6 +5,7 @@ from timm.models.vision_transformer import PatchEmbed, Block
 from functools import partial
 import math
 from util.pos_embed import get_2d_sincos_pos_embed
+import torch.nn.functional as F
 
 class BootstrappedMAE(nn.Module):
     def __init__(self,args):
@@ -19,7 +20,7 @@ class BootstrappedMAE(nn.Module):
 
         self.ema_decay = args.ema_decay_init
 
-        self.LN = nn.LayerNorm(self.student_model.embed_dim, eps=1e-6, elementwise_affine=False).cuda() if args.ln_feature else nn.Identity()
+        # self.LN = nn.LayerNorm(self.student_model.embed_dim, eps=1e-6, elementwise_affine=False).cuda() if args.ln_feature else nn.Identity()
         
 
         self.args = args
@@ -53,7 +54,10 @@ class BootstrappedMAE(nn.Module):
         # latent_teacher: [N,L,C]
         # mask: [N,L], 0 is keep, 1 is remove
 
-        feature_loss = (self.LN(pred_student_feature) - self.LN(latent_teacher)) ** 2
+        # feature_loss = (self.LN(pred_student_feature) - self.LN(latent_teacher)) ** 2
+        # feature_loss = (F.normalize(pred_student_feature,p=2,dim=-1) - F.normalize(latent_teacher,p=2,dim=-1)) ** 2
+        feature_loss = (pred_student_feature - latent_teacher) ** 2
+
         feature_loss = feature_loss.mean(dim=-1)    # [N,L]
         feature_loss = (feature_loss * mask).sum() / mask.sum()  # mean loss on removed patches
 
@@ -351,70 +355,45 @@ class FeatureMaskedAutoencoderViT(nn.Module):
         print('error!')
 
     def blockwise_masking(self, x, mask_ratio, block_size=16, rand_ratio=0.2):
-        """
-        Block-wise masking with extra randomness, vectorized over batch.
-        
-        参数:
-        x: [N, L, D]，输入序列
-        mask_ratio: 需要 mask 的比例
-        block_size: 块的大小，用于生成局部连续的 mask 区域
-        rand_ratio: 在总 mask 数中额外增加的随机 mask 比例，用于打散完全连续的块
 
-        返回:
-        x_masked: 经过 mask 后保留的 token，对应原始顺序
-        final_mask: [N, L]，二值 mask，1 表示 mask，0 表示保留
-        ids_restore: 用于恢复原始顺序的索引
-        """
         N, L, D = x.shape
         len_mask = int(L * mask_ratio)
         len_keep = L - len_mask
 
-        # 1. 根据 block_size 计算每个样本所需的块数（至少 1 个）
         num_blocks = max(1, len_mask // block_size)
 
-        # 2. 每个样本随机选择 num_blocks 个起始位置（确保 block 内不越界）
-        #    形状: [N, num_blocks]
         start_idxs = torch.randint(0, L - block_size + 1, (N, num_blocks), device=x.device)
 
-        # 3. 利用广播构造每个 block 内的连续索引
-        #    block_range: [1, 1, block_size]
+
         block_range = torch.arange(block_size, device=x.device).unsqueeze(0).unsqueeze(0)
         #    block_indices: [N, num_blocks, block_size]
         block_indices = start_idxs.unsqueeze(-1) + block_range
-        #    展平成: [N, num_blocks * block_size]
+        #    [N, num_blocks * block_size]
         block_indices = block_indices.view(N, -1)
 
-        # 4. 计算额外随机 mask 数量（可能为 0）
         num_extra = int(len_mask * rand_ratio)
         #    extra_idxs: [N, num_extra]
         extra_idxs = torch.randint(0, L, (N, num_extra), device=x.device)
 
-        # 5. 创建初始 mask，先将块 mask 和额外随机 mask 位置置 1
         mask = torch.zeros((N, L), device=x.device)
         mask.scatter_(1, block_indices, 1)
         if num_extra > 0:
             mask.scatter_(1, extra_idxs, 1)
-        mask = mask.clamp(max=1)  # 确保为二值
+        mask = mask.clamp(max=1)  
 
-        # 6. 每个样本可能 mask 数量会超过或不足目标数量，下面通过随机排序调整到正好 len_mask 个 mask
-        #    对每个样本生成随机值，mask 为 1 的位置保留原值，不 mask 的位置赋值大一些（这里用 2.0）使其排序靠后
+
         rand_vals = torch.rand(N, L, device=x.device)
         vals = torch.where(mask == 1, rand_vals, torch.full((N, L), 2.0, device=x.device))
-        #    排序，选取前 len_mask 个位置为最终 mask
         sorted_indices = torch.argsort(vals, dim=1)
         final_mask = torch.zeros_like(mask)
-        final_mask.scatter_(1, sorted_indices[:, :len_mask], 1)  # 每个样本正好 len_mask 个 1
+        final_mask.scatter_(1, sorted_indices[:, :len_mask], 1)  
 
-        # 7. 计算保留部分的 token 索引
-        #    构造每个样本的所有 token 索引
+
         ids = torch.arange(L, device=x.device).unsqueeze(0).expand(N, L)
-        #    利用 masked_select 分别取出保留（mask==0）和 mask（mask==1）的 token 下标，并 reshape 为 [N, len_keep] 和 [N, len_mask]
         ids_keep = torch.masked_select(ids, final_mask == 0).view(N, len_keep)
         ids_mask = torch.masked_select(ids, final_mask == 1).view(N, len_mask)
-        #    拼接后 argsort 恢复原始顺序索引
         ids_restore = torch.argsort(torch.cat([ids_keep, ids_mask], dim=1), dim=1)
 
-        # 8. 根据 ids_keep 从 x 中 gather 保留部分数据
         x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).expand(-1, -1, D))
         
         return x_masked, final_mask, ids_restore
